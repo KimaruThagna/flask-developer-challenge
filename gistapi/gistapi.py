@@ -10,6 +10,7 @@ providing a search across all public Gists for a given Github account.
 """
 
 import requests
+import re
 from flask import Flask, jsonify, request
 
 
@@ -37,16 +38,33 @@ def gists_for_user(username):
         The dict parsed from the json response from the Github API.  See
         the above URL for details of the expected structure.
     """
-    gists_url = 'https://api.github.com/users/{username}/gists'.format(
-            username=username)
+    gists_url = f"https://api.github.com/users/{username}/gists"
     response = requests.get(gists_url)
-    # BONUS: What failures could happen?
+    # BONUS: What failures could happen? HTTP errors, 4XX,5XX,3XX
     # BONUS: Paging? How does this work for users with tons of gists?
 
-    return response.json()
+    """
+     can use query params to loop through pages. eg
+     response_gists = []
+     for i in range(30): #with 100 items per page the max pages is 30
+       gists_url = https://api.github.com/users/{username}/gists?per_page=100&page={i}
+       response_gists.append(requests.get(gists_url))
+    """
+
+    if response.status_code == 200 and response.json() != []:
+        return {"status_success": True, "result": response.json()}
+    elif response.status_code == 404:
+        return {"status_success": False, "result": "404 Error. User does not exist"}
+    elif response.status_code == 200 and response.json() == []:
+        return {
+            "status_success": False,
+            "result": " Warning. The user does not have any public gists",
+        }
+    else:  # general invalid argument, can be improved with better error status catching
+        return {"status_success": False, "result": "Error. Invalid username argument"}
 
 
-@app.route("/api/v1/search", methods=['POST'])
+@app.route("/api/v1/search", methods=["POST"])
 def search():
     """Provides matches for a single pattern across a single users gists.
 
@@ -59,28 +77,42 @@ def search():
         indicating any failure conditions.
     """
     post_data = request.get_json()
-    # BONUS: Validate the arguments?
-
-    username = post_data['username']
-    pattern = post_data['pattern']
+    # BONUS: Validate the arguments? Check if empty
+    if post_data != None:
+        username = post_data["username"]
+        pattern = post_data["pattern"]
+    else:
+        return "Error. Username and pattern has to be provided"
 
     result = {}
-    gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
+    result["matches"] = []
+    gist_response = gists_for_user(username)
+    if gist_response["status_success"]:
+        gists = gist_response["result"]
+    else:
+        return gist_response["result"]
+    # BONUS: Handle invalid users? hanled at gists_for_user function.
+    # any invalid user will not generate a valid 200 response with data
 
     for gist in gists:
         # REQUIRED: Fetch each gist and check for the pattern
         # BONUS: What about huge gists?
         # BONUS: Can we cache results in a datastore/db?
-        pass
+        if not gist["truncated"]:  # not truncated, process file
+            for file_obj in gist["files"]:
+                file_contents = requests.get(gist["files"][file_obj]["raw_url"])
+                if re.match(pattern, file_contents.text):
+                    result["matches"].append(gist["html_url"])
 
-    result['status'] = 'success'
-    result['username'] = username
-    result['pattern'] = pattern
-    result['matches'] = []
+        else:  # truncated hence huge gist and requres to be git pulled
+            # cache results in datastore such as sqlite
+            pass
 
+    result["status"] = "success"
+    result["username"] = username
+    result["pattern"] = pattern
     return jsonify(result)
 
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=9876)
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=9876)
